@@ -9,3 +9,6 @@ data/processed/
 logs/
 *.log
 AI_Engineer_Coding_Assignment.md
+mlflow.db*
+data/mlflow.db*
+mlruns

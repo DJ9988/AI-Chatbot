@@ -47,10 +47,13 @@ class Settings(BaseModel):
     llm_max_retries: int = Field(
         default_factory=lambda: int(os.getenv("LLM_MAX_RETRIES", "1"))
     )
+    llm_timeout: float = Field(
+        default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "45.0"))
+    )
 
     # Observability (MLflow)
     mlflow_tracking_uri: str = Field(
-        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "./mlruns")
+        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "sqlite:///data/mlflow.db")
     )
     mlflow_experiment_name: str = Field(
         default_factory=lambda: os.getenv("MLFLOW_EXPERIMENT_NAME", "indian_unicorns_chatbot")

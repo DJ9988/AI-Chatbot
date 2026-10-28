@@ -28,6 +28,7 @@ def create_single_chat_model(
         api_key=api_key,
         temperature=cfg.llm_temperature if temperature is None else temperature,
         max_retries=cfg.llm_max_retries,
+        timeout=cfg.llm_timeout,
     )
 
 

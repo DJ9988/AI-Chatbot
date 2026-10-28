@@ -17,11 +17,15 @@ from langchain_openai import ChatOpenAI
 
 def test_settings_default_values():
     """Verify default settings values when env vars are not set."""
-    settings = Settings()
-    assert settings.llm_base_url == "https://integrate.api.nvidia.com/v1"
-    assert "llama" in settings.primary_model.lower()
-    assert len(settings.all_models) >= 1
-    assert settings.primary_model == settings.all_models[0]
+    env_clean = dict(os.environ)
+    env_clean.pop("LLM_BASE_URL", None)
+    env_clean.pop("PRIMARY_MODEL", None)
+    with patch.dict(os.environ, env_clean, clear=True):
+        settings = Settings(_env_file=None)
+        assert settings.llm_base_url == "https://integrate.api.nvidia.com/v1"
+        assert "llama" in settings.primary_model.lower()
+        assert len(settings.all_models) >= 1
+        assert settings.primary_model == settings.all_models[0]
 
 
 def test_settings_custom_env():

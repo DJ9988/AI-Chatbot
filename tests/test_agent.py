@@ -161,7 +161,7 @@ def test_agent_tool_calling_execution():
         content="Razorpay is an Indian payments unicorn founded in 2014 and based in Bengaluru."
     )
 
-    mock_llm.invoke.return_value = tool_call_msg
+    mock_llm.invoke.side_effect = [tool_call_msg, final_answer_msg]
     mock_model = MagicMock()
     mock_model.bind_tools.return_value = mock_llm
     mock_model.invoke.return_value = final_answer_msg
@@ -206,6 +206,146 @@ def test_agent_multi_turn_history_persistence():
     assert history[1].content == "Here are 10 fintech startups."
     assert history[2].content == "Which of these are based in Bangalore?"
     assert "based in Bengaluru" in history[3].content
+
+
+def test_agent_multi_turn_tool_calling_history_clean():
+    """Verify that turns with tool calls do not leave dangling tool_calls in session history.
+    
+    Prevents HTTP 400 'Not the same number of function calls and responses' on follow-up turns.
+    """
+    mock_llm = MagicMock()
+    mock_model = MagicMock()
+    mock_model.bind_tools.return_value = mock_llm
+
+    # Turn 1: Step 1 (llm_with_tools) emits tool call, Step 2 (model) synthesizes response
+    tool_call_msg = AIMessage(
+        content="",
+        tool_calls=[{"name": "lookup_company", "args": {"company_name": "Razorpay"}, "id": "call_1"}],
+    )
+    synthesis_msg = AIMessage(content="Razorpay is an Indian payments unicorn based in Bengaluru.")
+    mock_llm.invoke.side_effect = [tool_call_msg]
+    mock_model.invoke.side_effect = [
+        synthesis_msg,
+        AIMessage(content="Similar companies to Razorpay include Pine Labs, BharatPe, and CRED."),
+    ]
+
+    agent = UnicornAgent(model=mock_model)
+    session_id = "test_multi_turn_tool_clean"
+
+    # Turn 1: User asks about Razorpay (triggers tool call & synthesis)
+    resp1 = agent.chat("What does Razorpay do?", session_id=session_id)
+    assert "Razorpay is an Indian payments unicorn" in resp1.content
+    assert len(resp1.tool_calls) == 1
+
+    # Verify session history for Turn 1 contains clean AIMessage with no dangling tool_calls
+    session = agent.conversation_manager.get_session(session_id)
+    history = session.get_messages()
+    assert len(history) == 2
+    assert not getattr(history[1], "tool_calls", None)
+
+    # Turn 2: User asks follow-up query
+    # In Turn 2, since needs_synthesis is initially False, invoker is llm_with_tools (mock_llm)
+    mock_llm.invoke.side_effect = [
+        AIMessage(content="Similar companies to Razorpay include Pine Labs, BharatPe, and CRED.")
+    ]
+    resp2 = agent.chat("Can you find me similar companies to this one.", session_id=session_id)
+    assert "Pine Labs" in resp2.content
+
+    # Inspect messages passed to the LLM on Turn 2
+    # mock_llm was called on Turn 1 step 1, and Turn 2 step 1
+    turn2_input_messages = mock_llm.invoke.call_args_list[-1][0][0]
+    # Check that any AIMessage in previous turns passed to LLM does NOT contain dangling tool_calls
+    for msg in turn2_input_messages:
+        if isinstance(msg, AIMessage):
+            assert not getattr(msg, "tool_calls", None), "Found dangling tool_calls in multi-turn history sent to provider!"
+
+
+def test_agent_streaming_callbacks():
+    """Verify that on_token and on_tool callbacks receive live events during execution."""
+    from langchain_core.messages import AIMessageChunk
+
+    mock_llm = MagicMock()
+    # Model requests a tool call in step 1 via streaming chunk
+    tool_chunk = AIMessageChunk(
+        content="",
+        tool_call_chunks=[{
+            "name": "lookup_company",
+            "args": '{"company_name": "Razorpay"}',
+            "id": "call_stream_1",
+            "index": 0,
+        }],
+    )
+    mock_llm.stream.return_value = [tool_chunk]
+
+    # Model streams chunks in step 2 (synthesis)
+    chunk1 = AIMessageChunk(content="Razorpay ")
+    chunk2 = AIMessageChunk(content="is a fintech ")
+    chunk3 = AIMessageChunk(content="unicorn.")
+    mock_model = MagicMock()
+    mock_model.bind_tools.return_value = mock_llm
+    mock_model.stream.return_value = [chunk1, chunk2, chunk3]
+
+    tokens_streamed = []
+    tools_started = []
+    tools_ended = []
+
+    def on_token(token: str):
+        tokens_streamed.append(token)
+
+    def on_tool_start(name: str, args: dict):
+        tools_started.append((name, args))
+
+    def on_tool_end(name: str, status: str, duration_ms: float):
+        tools_ended.append((name, status, duration_ms))
+
+    agent = UnicornAgent(model=mock_model)
+    resp = agent.chat(
+        "What does Razorpay do?",
+        session_id="stream_test_session",
+        on_token=on_token,
+        on_tool_start=on_tool_start,
+        on_tool_end=on_tool_end,
+    )
+
+    assert "".join(tokens_streamed) == "Razorpay is a fintech unicorn."
+    assert resp.content == "Razorpay is a fintech unicorn."
+    assert len(tools_started) == 1
+    assert tools_started[0][0] == "lookup_company"
+    assert len(tools_ended) == 1
+    assert tools_ended[0][0] == "lookup_company"
+    assert tools_ended[0][1] == "success"
+
+
+def test_thought_streaming_with_tags_and_reasoning_content():
+    """Verify live routing of both <think> tags and native reasoning_content to on_thought callback."""
+    from langchain_core.messages import AIMessageChunk
+    from agent.agent import ThoughtStreamFilter
+
+    thoughts_collected = []
+    tokens_collected = []
+
+    stream_filter = ThoughtStreamFilter(
+        on_token=lambda t: tokens_collected.append(t),
+        on_thought=lambda t: thoughts_collected.append(t),
+    )
+
+    # Chunk with native reasoning_content (e.g. DeepSeek-R1 / Nemotron)
+    stream_filter.process_chunk("", reasoning_content="Checking funding data... ")
+
+    # Chunks with <think> tag syntax
+    chunks = [
+        "<th",
+        "ink>Found Razorpay in DB</th",
+        "ink>\nRazorpay raised $742M."
+    ]
+    for c in chunks:
+        stream_filter.process_chunk(c)
+    stream_filter.flush()
+
+    assert "".join(thoughts_collected) == "Checking funding data... Found Razorpay in DB"
+    assert "".join(tokens_collected) == "\nRazorpay raised $742M."
+    assert stream_filter.get_thought() == "Checking funding data... Found Razorpay in DB"
+    assert stream_filter.get_clean_content() == "Razorpay raised $742M."
 
 
 if __name__ == "__main__":
