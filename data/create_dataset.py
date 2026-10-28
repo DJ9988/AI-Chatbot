@@ -62,6 +62,7 @@ def normalize_text(series: pd.Series) -> pd.Series:
         .str.replace(r"\s+", " ", regex=True)
         .str.strip()
     )
+    normalized = normalized.str.replace(r"^\?(\d)", r"₹\1", regex=True)
     return normalized.mask(normalized.str.casefold().isin(MISSING_MARKERS))
 
 
