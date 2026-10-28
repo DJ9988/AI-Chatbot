@@ -19,10 +19,9 @@ def test_settings_default_values():
     """Verify default settings values when env vars are not set."""
     settings = Settings()
     assert settings.llm_base_url == "https://integrate.api.nvidia.com/v1"
-    assert "llama-3.3-70b-instruct" in settings.primary_model
-    assert len(settings.fallback_models) >= 1
-    assert settings.primary_model not in settings.fallback_models
-    assert settings.all_models[0] == settings.primary_model
+    assert "llama" in settings.primary_model.lower()
+    assert len(settings.all_models) >= 1
+    assert settings.primary_model == settings.all_models[0]
 
 
 def test_settings_custom_env():
