@@ -1,0 +1,11 @@
+myenv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+data/raw/
+data/processed/
+logs/
+*.log
+AI_Engineer_Coding_Assignment.md
