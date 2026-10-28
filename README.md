@@ -24,35 +24,25 @@ On Windows PowerShell:
 python data/create_dataset.py
 ```
 
-The script downloads the Kaggle dataset when `data/raw/tracxn.csv` is missing, normalizes it, and writes `data/processed/tracxn.csv`. Existing raw data is reused.
+The script downloads the Kaggle dataset when `data/raw/tracxn.csv` is missing, normalizes it, and creates `data/processed/companies.db`. Existing raw data is reused.
 
-If Kaggle authentication is required:
+## Configuration
 
-```bash
-kaggle auth login
-python data/create_dataset.py
-```
-
-Or use an environment variable:
+Create a `.env` file in the project root using `.env.example` as a template:
 
 ```bash
-export KAGGLE_API_TOKEN="your-token"
-python data/create_dataset.py
+cp .env.example .env
 ```
 
-For automated environments, pass a token file stored outside this repository:
+Set these values in `.env`:
 
-```bash
-python data/create_dataset.py \
-  --kaggle-api-token-file /secure/path/kaggle_token.txt
+```text
+KAGGLE_API_KEY=your-kaggle-token
 ```
 
-Useful options:
+`KAGGLE_API_KEY` is used only when the script needs to download the raw dataset.
 
-```bash
-python data/create_dataset.py --force-download
-python data/create_dataset.py --skip-download
-```
+The SQLite database contains a `companies` table with indexes for location and sector, plus a `companies_fts` FTS5 table for full-text search.
 
 ## Data handling
 
@@ -67,7 +57,7 @@ python data/create_dataset.py --skip-download
 data/
   create_dataset.py
   raw/                 # generated
-  processed/           # generated
+  processed/           # generated CSV and SQLite database
 notebooks/
   eda.ipynb
 ```

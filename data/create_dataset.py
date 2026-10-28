@@ -1,8 +1,10 @@
-"""Download (when needed) and normalize the Kaggle dataset for the chatbot.
+"""Download, normalize, and index the company dataset for the chatbot.
 
-The raw Kaggle export is saved unchanged to ``data/raw/tracxn.csv``. The
-normalized UTF-8 version used by the application is written to
-``data/processed/tracxn.csv``.
+The raw Kaggle export is kept at ``data/raw/tracxn.csv``. This script creates
+two generated artifacts for the application:
+
+- ``data/processed/tracxn.csv``: normalized UTF-8 CSV
+- ``data/processed/companies.db``: SQLite database with an FTS5 search index
 
 Run from the project root:
 
@@ -11,31 +13,44 @@ Run from the project root:
 
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
+from numbers import Integral
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DOTENV_PATH = PROJECT_ROOT / ".env"
 DATASET_HANDLE = "srisankargiri/list-of-118-unicorn-startups-in-indiamay-2025"
-DEFAULT_RAW_PATH = PROJECT_ROOT / "data" / "raw" / "tracxn.csv"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "processed" / "tracxn.csv"
+RAW_PATH = PROJECT_ROOT / "data" / "raw" / "tracxn.csv"
+PROCESSED_CSV_PATH = PROJECT_ROOT / "data" / "processed" / "tracxn.csv"
+SQLITE_PATH = PROJECT_ROOT / "data" / "processed" / "companies.db"
 
-# These values mean that information was not supplied. They are retained as
-# missing values; no unavailable company information is fabricated or imputed.
+load_dotenv(DOTENV_PATH, override=True)
+
 MISSING_MARKERS = {"", "?", "n/a", "na", "none", "null", "unknown"}
+LOCATION_ALIASES = {"bangalore": "Bengaluru", "bengaluru": "Bengaluru"}
 
-# Keep aliases small and explicit so that normalization does not silently alter
-# valid names. This supports filters such as “companies in Bangalore”.
-LOCATION_ALIASES = {
-    "bangalore": "Bengaluru",
-    "bengaluru": "Bengaluru",
-}
+SQLITE_COLUMNS = (
+    "source_rank", "company_name", "company_link", "company_info", "round_led_by",
+    "company_background", "founded_year", "location", "country", "stage",
+    "primary_sector", "time_to_unicorn", "top_investors_1", "top_investors_2",
+    "annual_revenue", "valuation", "total_funding_till_date", "employee_count",
+    "latest_funding_round",
+)
+SOURCE_COLUMNS = (
+    "Rank", "Company", "company_link", "company_info", "round_led_by",
+    "company_background", "founded_year", "location", "country", "stage",
+    "primary_sector", "time_to_unicorn", "top_investors_1", "top_investors_2",
+    "annual_revenue", "valuation", "total_funding_till_date", "employee_count",
+    "latest_funding_round",
+)
 
 
 def normalize_text(series: pd.Series) -> pd.Series:
@@ -62,58 +77,43 @@ def normalize_dataset(df: pd.DataFrame) -> pd.DataFrame:
         result["location"] = location_key.map(LOCATION_ALIASES).fillna(
             result["location"]
         )
-
     return result
 
 
-def get_kaggle_environment(token_file: Path | None) -> dict[str, str]:
-    """Return subprocess environment, optionally adding a token from a file."""
+def get_kaggle_environment() -> dict[str, str]:
+    """Return an environment compatible with the current Kaggle CLI."""
 
     environment = os.environ.copy()
-    if token_file is None:
-        return environment
-
-    try:
-        token = token_file.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise RuntimeError(f"Could not read Kaggle token file: {token_file}") from error
-
-    if not token:
-        raise RuntimeError(f"Kaggle token file is empty: {token_file}")
-
-    environment["KAGGLE_API_TOKEN"] = token
+    # The project uses KAGGLE_API_KEY in .env. The Kaggle CLI expects this value
+    # under KAGGLE_API_TOKEN when the download command is invoked.
+    if api_key := environment.get("KAGGLE_API_KEY"):
+        environment["KAGGLE_API_TOKEN"] = api_key
     return environment
 
 
-def download_raw_dataset(
-    raw_path: Path, *, force_download: bool, token_file: Path | None
-) -> None:
-    """Download and extract the source CSV using the installed Kaggle CLI."""
+def download_raw_dataset() -> None:
+    """Download and extract the source CSV when it is not already present."""
 
     kaggle_command = shutil.which("kaggle")
     if kaggle_command is None:
         raise RuntimeError(
             "The raw dataset is missing and the Kaggle CLI is not installed. "
-            "Install dependencies with `pip install -r requirements.txt`, then "
-            "authenticate with `kaggle auth login` or set KAGGLE_API_TOKEN."
+            "Run `pip install -r requirements.txt`."
         )
 
-    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
     command = [
         kaggle_command,
         "datasets",
         "download",
         DATASET_HANDLE,
         "--path",
-        str(raw_path.parent),
+        str(RAW_PATH.parent),
         "--unzip",
     ]
-    if force_download:
-        command.append("--force")
-
     result = subprocess.run(
         command,
-        env=get_kaggle_environment(token_file),
+        env=get_kaggle_environment(),
         text=True,
         capture_output=True,
         check=False,
@@ -121,84 +121,117 @@ def download_raw_dataset(
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "No details provided."
         raise RuntimeError(
-            "Kaggle could not download the dataset. Authenticate with `kaggle auth "
-            "login`, set KAGGLE_API_TOKEN, or pass --kaggle-api-token-file.\n\n"
+            "Kaggle could not download the dataset. Set KAGGLE_API_KEY in .env "
+            "if authentication is required.\n\n"
             f"Kaggle output:\n{detail}"
         )
-
-    if not raw_path.exists():
-        raise RuntimeError(
-            f"Kaggle completed but the expected file was not found: {raw_path}."
-        )
+    if not RAW_PATH.exists():
+        raise RuntimeError(f"Kaggle completed but did not create {RAW_PATH}.")
 
 
-def ensure_raw_dataset(args: argparse.Namespace) -> None:
-    """Use an existing raw file or download it when it is missing/forced."""
+def ensure_raw_dataset() -> None:
+    """Use the existing raw CSV or download it."""
 
-    if args.raw_path.exists() and not args.force_download:
-        print(f"Using existing raw dataset: {args.raw_path}")
+    if RAW_PATH.exists():
+        print(f"Using existing raw dataset: {RAW_PATH}")
         return
 
-    if args.skip_download:
-        raise RuntimeError(
-            f"Raw dataset not found at {args.raw_path}. Remove --skip-download to "
-            "download it, or provide --raw-path."
-        )
-
     print(f"Downloading Kaggle dataset: {DATASET_HANDLE}")
-    download_raw_dataset(
-        args.raw_path,
-        force_download=args.force_download,
-        token_file=args.kaggle_api_token_file,
-    )
+    download_raw_dataset()
 
 
-def process_dataset(raw_path: Path, output_path: Path) -> pd.DataFrame:
-    """Read the raw CSV, normalize it, and save a UTF-8 processed copy."""
+def process_dataset() -> pd.DataFrame:
+    """Normalize the raw CSV and write a UTF-8 processed copy."""
 
-    # The Kaggle export contains Windows-1252 characters, such as NBSP bytes.
-    raw = pd.read_csv(raw_path, encoding="cp1252")
+    raw = pd.read_csv(RAW_PATH, encoding="cp1252")
     processed = normalize_dataset(raw)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    processed.to_csv(output_path, index=False, encoding="utf-8")
+    PROCESSED_CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    processed.to_csv(PROCESSED_CSV_PATH, index=False, encoding="utf-8")
     return processed
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw-path", type=Path, default=DEFAULT_RAW_PATH)
-    parser.add_argument("--output-path", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument(
-        "--force-download",
-        action="store_true",
-        help="Download the Kaggle dataset again even when the raw CSV exists.",
+def sqlite_value(value: object) -> str | int | None:
+    """Convert pandas values to SQLite-compatible scalar values."""
+
+    if pd.isna(value):
+        return None
+    if isinstance(value, Integral):
+        return int(value)
+    return str(value)
+
+
+def create_sqlite_database(df: pd.DataFrame) -> None:
+    """Rebuild the local SQLite database and its full-text search index."""
+
+    create_companies_table = """
+        CREATE TABLE companies (
+            id INTEGER PRIMARY KEY,
+            source_rank INTEGER,
+            company_name TEXT NOT NULL UNIQUE,
+            company_link TEXT,
+            company_info TEXT,
+            round_led_by TEXT,
+            company_background TEXT,
+            founded_year INTEGER,
+            location TEXT,
+            country TEXT,
+            stage TEXT,
+            primary_sector TEXT,
+            time_to_unicorn TEXT,
+            top_investors_1 TEXT,
+            top_investors_2 TEXT,
+            annual_revenue TEXT,
+            valuation TEXT,
+            total_funding_till_date TEXT,
+            employee_count TEXT,
+            latest_funding_round TEXT
+        )
+    """
+    insert_statement = (
+        f"INSERT INTO companies ({', '.join(SQLITE_COLUMNS)}) "
+        f"VALUES ({', '.join('?' for _ in SQLITE_COLUMNS)})"
     )
-    parser.add_argument(
-        "--skip-download",
-        action="store_true",
-        help="Fail instead of downloading if the raw CSV is missing.",
-    )
-    parser.add_argument(
-        "--kaggle-api-token-file",
-        type=Path,
-        help=(
-            "File containing a KAGGLE_API_TOKEN. Prefer this or the environment "
-            "variable to passing credentials through command-line history."
-        ),
-    )
-    return parser.parse_args()
+    records = [
+        tuple(sqlite_value(row[column]) for column in SOURCE_COLUMNS)
+        for _, row in df.iterrows()
+    ]
+
+    try:
+        with sqlite3.connect(SQLITE_PATH) as connection:
+            connection.execute("DROP TABLE IF EXISTS companies_fts")
+            connection.execute("DROP TABLE IF EXISTS companies")
+            connection.execute(create_companies_table)
+            connection.execute("CREATE INDEX idx_companies_location ON companies(location)")
+            connection.execute("CREATE INDEX idx_companies_sector ON companies(primary_sector)")
+            connection.executemany(insert_statement, records)
+            connection.execute(
+                "CREATE VIRTUAL TABLE companies_fts USING fts5("
+                "company_name, company_info, company_background)"
+            )
+            connection.execute(
+                "INSERT INTO companies_fts(rowid, company_name, company_info, company_background) "
+                "SELECT id, company_name, COALESCE(company_info, ''), "
+                "COALESCE(company_background, '') FROM companies"
+            )
+    except sqlite3.Error as error:
+        raise RuntimeError(f"Could not create the SQLite database: {error}") from error
+
+    print(f"Created SQLite database: {SQLITE_PATH}")
+    print(f"Indexed {len(records)} companies for full-text search.")
 
 
 def main() -> None:
-    args = parse_args()
+    if len(sys.argv) != 1:
+        raise SystemExit("This script does not accept command-line arguments.")
+
     try:
-        ensure_raw_dataset(args)
-        processed = process_dataset(args.raw_path, args.output_path)
+        ensure_raw_dataset()
+        processed = process_dataset()
+        create_sqlite_database(processed)
     except RuntimeError as error:
         raise SystemExit(f"Error: {error}") from error
 
-    print(f"Created processed dataset: {args.output_path}")
+    print(f"Created processed dataset: {PROCESSED_CSV_PATH}")
     print(f"Rows: {len(processed)} | Columns: {len(processed.columns)}")
     print(f"Missing values retained: {int(processed.isna().sum().sum())}")
 
