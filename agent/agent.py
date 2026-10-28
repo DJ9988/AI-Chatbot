@@ -149,7 +149,7 @@ class UnicornAgent:
         model: Optional[BaseChatModel] = None,
         tools: Optional[List[BaseTool]] = None,
         conversation_manager: Optional[ConversationManager] = None,
-        max_tool_iterations: int = 3,
+        max_tool_iterations: int = 5,
     ) -> None:
         self.settings = settings or get_settings()
         init_tracer(self.settings)
@@ -204,8 +204,62 @@ class UnicornAgent:
         effective_query = sanitized.sanitized_query
         guardrail_flags = sanitized.flagged_reasons or []
 
+        if not sanitized.is_safe:
+            refusal_content = (
+                "I cannot fulfill this request. I am only authorized to answer questions "
+                "about Indian unicorn startups from the database."
+            )
+            session.add_user_message(effective_query)
+            session.add_ai_message(refusal_content)
+            session.update_trace_outputs()
+            latency_ms = (time.perf_counter() - start_time) * 1000.0
+            trace_id = session.trace_id or get_last_trace_id()
+            token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+            if on_token:
+                on_token(refusal_content)
+
+            self.audit_logger.log_turn(
+                session_id=session_id,
+                turn_index=session.query_count,
+                user_query=user_query,
+                sanitized_query=effective_query,
+                is_safe=False,
+                guardrail_flags=guardrail_flags,
+                bot_response=refusal_content,
+                latency_ms=latency_ms,
+                tool_calls=[],
+                is_clarification=False,
+                trace_id=trace_id,
+                model=self.settings.primary_model,
+                token_usage=token_usage,
+                error="Prompt injection detected and blocked by guardrail.",
+            )
+            self.metrics_collector.record_turn(
+                session_id=session_id,
+                latency_ms=latency_ms,
+                is_clarification=False,
+                error=False,
+                is_flagged=True,
+                tool_names=[],
+                token_usage=token_usage,
+            )
+            return AgentResponse(
+                content=refusal_content,
+                session_id=session_id,
+                tool_calls=[],
+                is_clarification=False,
+                latency_ms=round(latency_ms, 2),
+                trace_id=trace_id,
+                token_usage=token_usage,
+                sanitized_query=effective_query,
+                guardrail_flags=guardrail_flags,
+                thought=None,
+            )
+
         # 2. Add user message to session history
         session.add_user_message(effective_query)
+        session_len_at_start = len(session.messages)
 
         # 3. Build full message chain: System prompt + session messages
         current_messages: List[BaseMessage] = [
@@ -240,13 +294,17 @@ class UnicornAgent:
                 needs_synthesis = False
                 if executed_tool_calls:
                     last_call = executed_tool_calls[-1]
-                    if last_call.get("status") == "success" or iteration >= self.max_tool_iterations:
+                    # get_available_filters is an auxiliary tool for discovering valid filters;
+                    # after inspecting filters, the agent still needs to query with the chosen filter
+                    if last_call.get("name") != "get_available_filters" and (
+                        last_call.get("status") == "success" or iteration >= self.max_tool_iterations
+                    ):
                         needs_synthesis = True
 
                 invoker = self.model if needs_synthesis else self.llm_with_tools
 
                 if on_status:
-                    if needs_synthesis:
+                    if executed_tool_calls:
                         on_status("Synthesizing answer from retrieved startup data...")
                     else:
                         on_status("Analyzing query & evaluating required startup tools...")
@@ -312,16 +370,21 @@ class UnicornAgent:
                 if thought_text:
                     final_thought = (f"{final_thought}\n{thought_text}").strip() if final_thought else thought_text
 
-                # If no tools requested or if synthesis finished, we have our final content
-                if needs_synthesis or not getattr(ai_msg, "tool_calls", None):
+                tool_calls = getattr(ai_msg, "tool_calls", None)
+
+                # If no tools requested or synthesis yielded text, we have our final content
+                if not tool_calls:
                     if clean_text:
                         final_content = clean_text
                     elif ai_msg.content:
                         final_content = str(ai_msg.content)
                     break
+                elif needs_synthesis and (clean_text or ai_msg.content):
+                    final_content = clean_text or str(ai_msg.content)
+                    break
 
                 # Execute all requested tool calls
-                for tool_call in ai_msg.tool_calls:
+                for tool_call in tool_calls:
                     tool_name = tool_call.get("name", "")
                     tool_args = tool_call.get("args", {})
                     tool_id = tool_call.get("id", f"call_{iteration}")
@@ -367,6 +430,16 @@ class UnicornAgent:
                     )
                     current_messages.append(tool_msg)
 
+                # If max iterations reached, invoke model once more for final synthesis
+                if iteration >= self.max_tool_iterations:
+                    try:
+                        synth_msg = self.model.invoke(current_messages)
+                        current_messages.append(synth_msg)
+                        final_content = str(synth_msg.content or "")
+                    except Exception as exc:
+                        logger.error("Synthesis invocation error: %s", exc)
+                    break
+
             # Fallback if final_content is still empty
             if not final_content:
                 for msg in reversed(current_messages):
@@ -394,7 +467,18 @@ class UnicornAgent:
                 "tool_calls_count": len(executed_tool_calls),
             })
 
-        # 5. Record final AI message in persistent session & update session trace outputs
+        # 5. Record full turn trajectory (tool calls & responses) and final AI response in session
+        new_turn_messages = current_messages[1 + session_len_at_start:]
+        for msg in new_turn_messages:
+            if isinstance(msg, ToolMessage):
+                session.add_message(msg)
+            elif isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                clean_calls = [
+                    {k: v for k, v in tc.items() if k in ("name", "args", "id", "type")}
+                    for tc in msg.tool_calls
+                ]
+                session.add_message(AIMessage(content=msg.content or "", tool_calls=clean_calls))
+
         session.add_ai_message(content=final_content)
         session.update_trace_outputs()
 

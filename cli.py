@@ -166,14 +166,20 @@ def run_interactive_cli() -> None:
             symbol = "✓" if status == "success" else "ℹ" if status in ("no_results", "not_found") else "✗"
             print(f"   {symbol} {tool_name} completed ({status}, {duration_ms:.1f}ms)", flush=True)
 
-        response = agent.chat(
-            user_input,
-            session_id=session_id,
-            on_token=handle_token,
-            on_thought=handle_thought,
-            on_tool_start=handle_tool_start,
-            on_tool_end=handle_tool_end,
-        )
+        try:
+            response = agent.chat(
+                user_input,
+                session_id=session_id,
+                on_token=handle_token,
+                on_thought=handle_thought,
+                on_tool_start=handle_tool_start,
+                on_tool_end=handle_tool_end,
+            )
+        except KeyboardInterrupt:
+            clear_waiting_indicator()
+            print("\n\n⚠️ Generation interrupted by user.\n")
+            print("-" * 65)
+            continue
 
         clear_waiting_indicator()
 

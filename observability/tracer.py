@@ -29,6 +29,14 @@ def init_tracer(settings: Optional[Settings] = None) -> None:
 
     try:
         mlflow.set_tracking_uri(cfg.mlflow_tracking_uri)
+        # Auto-restore experiment if it was previously soft-deleted
+        try:
+            client = mlflow.tracking.MlflowClient()
+            exp = client.get_experiment_by_name(cfg.mlflow_experiment_name)
+            if exp and exp.lifecycle_stage == "deleted":
+                client.restore_experiment(exp.experiment_id)
+        except Exception:
+            pass
         mlflow.set_experiment(cfg.mlflow_experiment_name)
         # Enable LangChain autologging with inline tracer for synchronous span capture
         mlflow.langchain.autolog(run_tracer_inline=True)

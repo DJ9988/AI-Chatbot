@@ -118,9 +118,10 @@ class SessionState:
 
     def _trim_history(self) -> None:
         """Keep message history within the max turns window to prevent unbounded growth."""
-        max_messages = self.max_history_turns * 2
-        if len(self.messages) > max_messages:
-            self.messages = self.messages[-max_messages:]
+        human_indices = [i for i, m in enumerate(self.messages) if isinstance(m, HumanMessage)]
+        if len(human_indices) > self.max_history_turns:
+            cutoff = human_indices[-self.max_history_turns]
+            self.messages = self.messages[cutoff:]
 
 
 class ConversationManager:

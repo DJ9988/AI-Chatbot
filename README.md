@@ -170,7 +170,7 @@ Every turn writes an audit entry formatted as:
 
 ## 🧪 Running Tests
 
-The test suite contains **86 comprehensive unit tests** covering data normalization, tools, agent lifecycle, real-time streaming, thought routing, observability, and sanitization:
+The test suite contains **87 comprehensive unit tests** covering data normalization, tools, agent lifecycle, real-time streaming, thought routing, observability, and sanitization:
 
 ```bash
 pytest -v
@@ -188,6 +188,9 @@ Test breakdown:
 ---
 
 ## 💡 Sample Interactions
+
+> 📘 **Looking for a comprehensive evaluation test suite?**  
+> Check out [TEST_QUERIES.md](file:///home/wolfie/ai_chatbot/TEST_QUERIES.md) for 25+ curated test cases spanning factual lookups, multi-turn follow-ups, context re-use, full-text capability search, typo tolerance, ambiguity handling, and security injection tests.
 
 ### 1. Factual Company Query
 ```text

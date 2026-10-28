@@ -28,6 +28,8 @@ INJECTION_PATTERNS = [
     re.compile(r"disregard\s+all\s+safety\s+guidelines", re.IGNORECASE),
     re.compile(r"<\|im_start\|>|<\|im_end\|>|\[INST\]|\[/INST\]", re.IGNORECASE),
     re.compile(r"reveal\s+your\s+(initial|system)\s+(prompt|instructions)", re.IGNORECASE),
+    re.compile(r"(print|show|output|display|repeat|give|reveal)\s+(me\s+)?(your\s+)?(entire\s+|full\s+|complete\s+)?(system\s+prompt|instructions|rules|guidelines)", re.IGNORECASE),
+    re.compile(r"(system\s+prompt|instructions)\s+verbatim", re.IGNORECASE),
 ]
 
 MAX_QUERY_LENGTH = 1000

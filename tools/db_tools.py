@@ -105,9 +105,13 @@ def get_company_by_name(name: str, db_path: Optional[Path] = None) -> Dict[str, 
                 "company": dict(row),
             }
 
-        # 4. If not found, find closest names for course correction
+        # 4. If not found, find genuinely close spelling matches (cutoff >= 0.72)
         all_names = get_all_company_names(db_path)
-        close_matches = difflib.get_close_matches(cleaned_name, all_names, n=4, cutoff=0.5)
+        close_matches = difflib.get_close_matches(cleaned_name, all_names, n=3, cutoff=0.72)
+        if not close_matches:
+            name_map = {n.casefold(): n for n in all_names}
+            lower_matches = difflib.get_close_matches(cleaned_name.casefold(), list(name_map.keys()), n=3, cutoff=0.72)
+            close_matches = [name_map[m] for m in lower_matches]
 
         return {
             "status": "not_found",
@@ -116,7 +120,7 @@ def get_company_by_name(name: str, db_path: Optional[Path] = None) -> Dict[str, 
             "guidance": (
                 f"Did you mean one of: {close_matches}? Or call `search_companies_tool` with keywords."
                 if close_matches
-                else "No similar company names found. Try `search_companies_tool` with general keywords."
+                else "No similar company names found in the dataset. Try `search_companies_tool` with general keywords."
             ),
         }
 
@@ -193,8 +197,8 @@ def filter_companies(
         all_sectors = get_all_sectors(db_path)
         all_locations = get_all_locations(db_path)
 
-        sector_sugg = difflib.get_close_matches(sector.strip(), all_sectors, n=3, cutoff=0.4) if sector else []
-        loc_sugg = difflib.get_close_matches(location.strip(), all_locations, n=3, cutoff=0.4) if location else []
+        sector_sugg = difflib.get_close_matches(sector.strip(), all_sectors, n=3, cutoff=0.7) if sector else []
+        loc_sugg = difflib.get_close_matches(location.strip(), all_locations, n=3, cutoff=0.7) if location else []
 
         return {
             "status": "no_results",
@@ -209,12 +213,12 @@ def filter_companies(
         }
 
 
-def escape_fts5_query(query: str) -> str:
+def escape_fts5_query(query: str, operator: str = "AND") -> str:
     """Sanitize and quote free-text terms for SQLite FTS5 matching."""
     words = re.findall(r"\b[\w\-]+\b", query)
     if not words:
         return '""'
-    return " AND ".join(f'"{word}"' for word in words)
+    return f" {operator} ".join(f'"{word}"' for word in words)
 
 
 def search_companies_fts(
@@ -231,10 +235,10 @@ def search_companies_fts(
             "companies": [],
         }
 
-    fts_expression = escape_fts5_query(cleaned_query)
-
     with get_db_connection(db_path) as conn:
         try:
+            # 1. First attempt: Strict AND match across all terms
+            fts_and = escape_fts5_query(cleaned_query, operator="AND")
             fts_sql = """
                 SELECT c.id, c.company_name, c.primary_sector, c.location, c.founded_year,
                        c.valuation, c.company_info, c.company_background
@@ -243,7 +247,7 @@ def search_companies_fts(
                 WHERE companies_fts MATCH ?
                 LIMIT ?
             """
-            rows = conn.execute(fts_sql, (fts_expression, limit)).fetchall()
+            rows = conn.execute(fts_sql, (fts_and, limit)).fetchall()
             if rows:
                 return {
                     "status": "success",
@@ -251,6 +255,28 @@ def search_companies_fts(
                     "count": len(rows),
                     "companies": [dict(r) for r in rows],
                 }
+
+            # 2. Second attempt: BM25 ranked OR match for multi-word queries
+            words = re.findall(r"\b[\w\-]+\b", cleaned_query)
+            if len(words) > 1:
+                fts_or = escape_fts5_query(cleaned_query, operator="OR")
+                fts_or_sql = """
+                    SELECT c.id, c.company_name, c.primary_sector, c.location, c.founded_year,
+                           c.valuation, c.company_info, c.company_background
+                    FROM companies_fts fts
+                    JOIN companies c ON c.company_name = fts.company_name
+                    WHERE companies_fts MATCH ?
+                    ORDER BY bm25(companies_fts)
+                    LIMIT ?
+                """
+                rows = conn.execute(fts_or_sql, (fts_or, limit)).fetchall()
+                if rows:
+                    return {
+                        "status": "success",
+                        "search_mode": "fts5",
+                        "count": len(rows),
+                        "companies": [dict(r) for r in rows],
+                    }
         except sqlite3.OperationalError:
             pass
 

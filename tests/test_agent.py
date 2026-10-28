@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent.agent import AgentResponse, UnicornAgent
 from agent.prompts import SYSTEM_PROMPT
@@ -237,11 +237,16 @@ def test_agent_multi_turn_tool_calling_history_clean():
     assert "Razorpay is an Indian payments unicorn" in resp1.content
     assert len(resp1.tool_calls) == 1
 
-    # Verify session history for Turn 1 contains clean AIMessage with no dangling tool_calls
+    # Verify session history for Turn 1 contains tool calls paired with ToolMessages
     session = agent.conversation_manager.get_session(session_id)
     history = session.get_messages()
-    assert len(history) == 2
-    assert not getattr(history[1], "tool_calls", None)
+    assert len(history) == 4
+    assert isinstance(history[0], HumanMessage)
+    assert getattr(history[1], "tool_calls", None)
+    assert isinstance(history[2], ToolMessage)
+    assert history[2].tool_call_id == history[1].tool_calls[0]["id"]
+    assert isinstance(history[3], AIMessage)
+    assert not getattr(history[3], "tool_calls", None)
 
     # Turn 2: User asks follow-up query
     # In Turn 2, since needs_synthesis is initially False, invoker is llm_with_tools (mock_llm)
@@ -252,12 +257,12 @@ def test_agent_multi_turn_tool_calling_history_clean():
     assert "Pine Labs" in resp2.content
 
     # Inspect messages passed to the LLM on Turn 2
-    # mock_llm was called on Turn 1 step 1, and Turn 2 step 1
     turn2_input_messages = mock_llm.invoke.call_args_list[-1][0][0]
-    # Check that any AIMessage in previous turns passed to LLM does NOT contain dangling tool_calls
-    for msg in turn2_input_messages:
-        if isinstance(msg, AIMessage):
-            assert not getattr(msg, "tool_calls", None), "Found dangling tool_calls in multi-turn history sent to provider!"
+    # Check that any AIMessage with tool_calls is immediately followed by a matching ToolMessage
+    for i, msg in enumerate(turn2_input_messages):
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            assert i + 1 < len(turn2_input_messages) and isinstance(turn2_input_messages[i + 1], ToolMessage)
+            assert turn2_input_messages[i + 1].tool_call_id == msg.tool_calls[0]["id"]
 
 
 def test_agent_streaming_callbacks():
