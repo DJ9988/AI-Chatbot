@@ -79,6 +79,11 @@ class Settings(BaseModel):
         ]
 
     @property
+    def database_path(self) -> Path:
+        """Alias to db_path for backwards compatibility."""
+        return self.db_path
+
+    @property
     def all_models(self) -> List[str]:
         """Return all configured models in priority order."""
         models = [self.primary_model]

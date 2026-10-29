@@ -19,7 +19,7 @@ from config.settings import get_settings
 
 def print_banner(model_name: str) -> None:
     print("=" * 65)
-    print(" 🦄 INDIAN UNICORN STARTUPS AI CHATBOT")
+    print(" INDIAN UNICORN STARTUPS AI CHATBOT")
     print(f" Powered by LangChain & Model: {model_name}")
     print("=" * 65)
     print("Commands:")

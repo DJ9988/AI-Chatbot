@@ -118,6 +118,78 @@ Inside the CLI, you can chat naturally or use the built-in commands:
 python cli.py --query "What does Razorpay do?"
 ```
 
+### 🌐 Running the FastAPI REST & Streaming Server
+
+To run the production REST API with automatic interactive OpenAPI / Swagger docs:
+
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+Open your browser at:
+- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **ReDoc Documentation:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
+
+#### Key Endpoints:
+- `POST /chat`: Synchronous conversation turn with full latency, tool calls, and Langfuse trace metadata.
+- `POST /chat/stream`: Real-time Server-Sent Events (SSE) token and thought streaming.
+- `GET /health`: System and SQLite database connectivity check.
+- `GET /sessions`: List active in-memory conversation sessions.
+- `GET /sessions/{session_id}`: Inspect multi-turn message history for a session.
+- `POST /sessions/{session_id}/reset`: Clear session context and flush traces.
+- `GET /metrics`: Aggregated queries, clarifications, and latency summary.
+- `GET /logs/latest?n=5`: Retrieve recent structured audit log records.
+
+#### Live API Functional Verification:
+
+With `uvicorn api:app` running in one terminal, run the automated live test suite in another:
+
+```bash
+python testing_api.py
+```
+This tests all 9 live capabilities sequentially (Health, Factual lookup, Multi-parameter filter, Multi-turn memory, Clarifying cross-questions, SSE streaming, Session history & reset, Metrics, and JSON audit logs) with formatted terminal output.
+
+---
+
+## 🐳 Docker Deployment
+
+The project separates the **Chatbot Application** container from the **Observability Stack** for production-grade modularity:
+
+### 1. Deploy the Chatbot Application Container
+
+A production-ready [`Dockerfile`](file:///home/wolfie/ai_chatbot/Dockerfile) and [`docker-compose.yml`](file:///home/wolfie/ai_chatbot/docker-compose.yml) build and run the chatbot API:
+
+```bash
+# Build and run the chatbot API container
+docker compose up -d --build
+```
+
+- **API URL:** [http://localhost:8000](http://localhost:8000)
+- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Persistent Volume:** Host `./logs/` mapped to container `/app/logs`
+
+### 2. Run Local Langfuse Observability Stack (Optional)
+
+The full Langfuse stack with ClickHouse, PostgreSQL, Redis, MinIO, and auto-provisioned credentials is located in `deploy/`:
+
+```bash
+# Start local Langfuse stack
+sudo docker compose -f deploy/docker-compose.langfuse.yml up -d
+
+# Open UI: http://localhost:3000
+# Login: admin@local.host / adminpassword123
+```
+
+*(To stop the observability stack: `sudo docker compose -f deploy/docker-compose.langfuse.yml down`)*
+
+### 3. Container-to-Host Observability Networking
+- **Langfuse Cloud (Default/Production):** Set `LANGFUSE_HOST=https://cloud.langfuse.com` in `.env`.
+- **Local Langfuse in Docker:** When running the chatbot inside its container while Langfuse is on the host, set:
+  ```ini
+  LANGFUSE_HOST="http://host.docker.internal:3000"
+  ```
+  *(The root `docker-compose.yml` automatically includes `extra_hosts: ["host.docker.internal:host-gateway"]` to route seamlessly).*
+
 ---
 
 ## 📊 Observability & Traces with Langfuse
@@ -288,7 +360,10 @@ ai_chatbot/
 │   ├── create_dataset.py     # Download, normalize, and build SQLite + FTS5 database
 │   ├── raw/                  # Downloaded raw CSV (created by create_dataset.py)
 │   └── processed/            # companies.db and normalized tracxn.csv
-├── docker-compose.yml        # Self-hosted Langfuse server & PostgreSQL setup
+├── Dockerfile                # Production Dockerfile for chatbot FastAPI application
+├── docker-compose.yml        # Application deployment compose (FastAPI service)
+├── deploy/
+│   └── docker-compose.langfuse.yml  # Local Langfuse production observability stack
 ├── tools/
 │   ├── __init__.py
 │   └── db_tools.py           # Dynamic SQLite retrieval tools (zero hardcoded dictionaries)
@@ -312,9 +387,12 @@ ai_chatbot/
 │   ├── test_create_dataset.py
 │   ├── test_tools.py
 │   ├── test_agent.py
+│   ├── test_api.py
 │   ├── test_observability.py
 │   └── test_sanitizer.py
 ├── cli.py                    # Interactive command-line interface
+├── api.py                    # FastAPI REST & SSE streaming server
+├── testing_api.py            # End-to-end live API functional verification script
 ├── requirements.txt
 ├── .env.example
 └── README.md
