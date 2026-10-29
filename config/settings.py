@@ -51,13 +51,21 @@ class Settings(BaseModel):
         default_factory=lambda: float(os.getenv("LLM_TIMEOUT", "45.0"))
     )
 
-    # Observability (MLflow)
-    mlflow_tracking_uri: str = Field(
-        default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI", "sqlite:///data/mlflow.db")
+    # Observability (Langfuse)
+    langfuse_public_key: str = Field(
+        default_factory=lambda: os.getenv("LANGFUSE_PUBLIC_KEY", "")
     )
-    mlflow_experiment_name: str = Field(
-        default_factory=lambda: os.getenv("MLFLOW_EXPERIMENT_NAME", "indian_unicorns_chatbot")
+    langfuse_secret_key: str = Field(
+        default_factory=lambda: os.getenv("LANGFUSE_SECRET_KEY", "")
     )
+    langfuse_host: str = Field(
+        default_factory=lambda: os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+    )
+
+    @property
+    def is_langfuse_configured(self) -> bool:
+        """Check whether Langfuse API credentials are configured."""
+        return bool(self.langfuse_public_key and self.langfuse_secret_key)
 
     @property
     def fallback_models(self) -> List[str]:

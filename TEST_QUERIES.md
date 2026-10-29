@@ -151,35 +151,33 @@ Tests the input sanitizer and prompt-injection defense mechanisms (`security/san
 
 After running any set of queries, verify the non-functional requirements:
 
-### 1. Interactive MLflow Trace in CLI
+### 1. Interactive Trace in CLI
 Type `trace` inside the CLI session:
 ```text
 User > trace
 
-🔍 MLflow Session Trace Information:
-{
-  "trace_id": "tr-f177467d55cba4907ec6dcdbf7eb9368",
-  "total_turns": 4,
-  "turn_spans": [
-    "Turn 1: What does Razorpay do?",
-    "Turn 2: When was Zepto founded and where is it...",
-    "Turn 3: What is Zerodha's latest valuation and...",
-    "Turn 4: Tell me about Postman's location and i..."
-  ]
-}
+🔍 Langfuse Tracing Status:
+  Configured: True
+  Host: http://localhost:3000
+  Session ID: d84180d1-04e6-42bb-9279-bb703b44b827
+  Trace Dashboard: http://localhost:3000/sessions/d84180d1-04e6-42bb-9279-bb703b44b827
 ```
 
-### 2. Full Interactive MLflow UI
-Launch the local MLflow dashboard:
+### 2. Langfuse UI (Docker or Cloud)
+Launch the local Langfuse stack:
 ```bash
-mlflow ui --backend-store-uri sqlite:///data/mlflow.db
+docker compose up -d
 ```
-Open [http://localhost:5000](http://localhost:5000) to inspect spans, latency breakdowns, and token metrics.
+Open [http://localhost:3000](http://localhost:3000) (or your Langfuse Cloud project) to inspect:
+- Multi-turn conversation sessions grouped under each `session_id`
+- Individual turn traces, input queries, and generated outputs
+- Tool invocations with execution duration and argument payloads
+- Token usage counts (`input_tokens`, `output_tokens`) and latency breakdowns
 
 ### 3. Structured Audit Log
 Inspect the append-only JSON Lines log:
 ```bash
-tail -n 5 logs/audit_log.jsonl | jq .
+tail -n 5 logs/chat_audit.jsonl | jq .
 ```
 Verify fields: `session_id`, `turn_index`, `user_query`, `latency_ms`, `tool_calls`, `token_usage`, `guardrail_flags`.
 

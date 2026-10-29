@@ -27,7 +27,7 @@ def print_banner(model_name: str) -> None:
     print(" - 'history' : View current conversation turns")
     print(" - 'stats'   : Display real-time aggregated metrics summary")
     print(" - 'log'     : View the last structured JSON audit log entry with full details")
-    print(" - 'trace'   : View MLflow tracing span tree & UI instructions")
+    print(" - 'trace'   : View Langfuse tracing status and dashboard link")
     print(" - 'exit'    : Quit the chatbot")
     print("-" * 65)
     print("Sample queries to try:")
@@ -102,23 +102,21 @@ def run_interactive_cli() -> None:
             continue
 
         if cmd in ("trace", "traces"):
-            session = agent.conversation_manager.get_session(session_id)
-            # Flush and export current session trace to MLflow storage so it is immediately viewable
-            current_trace_id = session.close_trace()
-            session.ensure_trace()  # Resume active session span for subsequent turns
-
-            from observability.tracer import get_trace_summary
-            print("\n🔍 MLflow Session Trace Information:")
-            if current_trace_id:
-                summary = get_trace_summary(current_trace_id)
-                if summary:
-                    print(json.dumps(summary, indent=2))
-                else:
-                    print(f"   Trace ID: {current_trace_id}")
+            from observability.tracer import flush_traces, get_trace_url
+            flush_traces()
+            print("\n🔍 Langfuse Tracing Information:")
+            if settings.is_langfuse_configured:
+                print(f"   Status: Active (connected to {settings.langfuse_host})")
+                print(f"   Session ID: {session_id}")
+                url = get_trace_url()
+                print(f"   Dashboard: {url}")
             else:
-                print("   No trace generated yet in this session.")
-            print("\n   To explore the full interactive trace tree, open a terminal and run:")
-            print("   👉 mlflow ui --backend-store-uri sqlite:///data/mlflow.db\n")
+                print("   Status: Offline Mode (LANGFUSE_PUBLIC_KEY not set in .env)")
+                print("   Local audit logs are saved in logs/chat_audit.jsonl")
+                print("   To view traces in Langfuse UI:")
+                print("   1. Start local Langfuse Docker: docker compose up -d")
+                print("   2. Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY in .env")
+                print("   3. Or set Langfuse Cloud keys from https://cloud.langfuse.com\n")
             continue
 
         thought_header_printed = False

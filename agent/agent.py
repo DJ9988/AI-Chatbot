@@ -7,11 +7,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-import mlflow
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from mlflow.entities import SpanType
 
 from agent.prompts import SYSTEM_PROMPT
 from agent.state import ConversationManager, SessionState
@@ -19,7 +17,7 @@ from config.provider import get_chat_model
 from config.settings import Settings, get_settings
 from observability.logger import get_audit_logger
 from observability.metrics import get_metrics_collector
-from observability.tracer import flush_traces, get_last_trace_id, get_trace_summary, init_tracer
+from observability.tracer import flush_traces, get_langfuse_handler, get_last_trace_id, get_trace_url, init_tracer
 from security.sanitizer import sanitize_query
 from tools.db_tools import (
     filter_companies_tool,
@@ -276,196 +274,224 @@ class UnicornAgent:
         final_content = ""
         final_thought = ""
 
-        # 4. Execute turn inside Turn span (nested under Session root span)
-        with mlflow.start_span(
-            name=f"Turn {turn_index}: {effective_query[:40]}", span_type=SpanType.CHAIN
-        ) as turn_span:
-            turn_span.set_inputs({
-                "user_query": user_query,
-                "sanitized_query": effective_query,
-                "turn_index": turn_index,
-            })
+        # 4. Initialize Langfuse tracking callback for this turn if configured
+        langfuse_handler = get_langfuse_handler(
+            session_id=session_id,
+            trace_name=f"Turn {turn_index}: {effective_query[:40]}",
+        )
+        invoke_config: Optional[Dict[str, Any]] = None
+        if langfuse_handler:
+            invoke_config = {
+                "callbacks": [langfuse_handler],
+                "metadata": {
+                    "langfuse_session_id": session_id,
+                    "langfuse_trace_name": f"Turn {turn_index}: {effective_query[:40]}",
+                },
+            }
 
-            # Multi-step ReAct loop
-            while iteration < self.max_tool_iterations:
-                iteration += 1
+        # Multi-step ReAct loop
+        while iteration < self.max_tool_iterations:
+            iteration += 1
 
-                # Decide whether to call model with tools or synthesize final response
-                needs_synthesis = False
+            # Decide whether to call model with tools or synthesize final response
+            needs_synthesis = False
+            if executed_tool_calls:
+                last_call = executed_tool_calls[-1]
+                # get_available_filters is an auxiliary tool for discovering valid filters;
+                # after inspecting filters, the agent still needs to query with the chosen filter
+                if last_call.get("name") != "get_available_filters" and (
+                    last_call.get("status") == "success" or iteration >= self.max_tool_iterations
+                ):
+                    needs_synthesis = True
+
+            invoker = self.model if needs_synthesis else self.llm_with_tools
+
+            if on_status:
                 if executed_tool_calls:
-                    last_call = executed_tool_calls[-1]
-                    # get_available_filters is an auxiliary tool for discovering valid filters;
-                    # after inspecting filters, the agent still needs to query with the chosen filter
-                    if last_call.get("name") != "get_available_filters" and (
-                        last_call.get("status") == "success" or iteration >= self.max_tool_iterations
-                    ):
-                        needs_synthesis = True
-
-                invoker = self.model if needs_synthesis else self.llm_with_tools
-
-                if on_status:
-                    if executed_tool_calls:
-                        on_status("Synthesizing answer from retrieved startup data...")
-                    else:
-                        on_status("Analyzing query & evaluating required startup tools...")
-
-                stream_filter = ThoughtStreamFilter(on_token=on_token, on_thought=on_thought)
-
-                try:
-                    if (on_token is not None or on_thought is not None) and hasattr(invoker, "stream"):
-                        # Real-time token streaming with live thought extraction
-                        accumulated_msg: Optional[AIMessageChunk] = None
-                        for chunk in invoker.stream(current_messages):
-                            accumulated_msg = chunk if accumulated_msg is None else accumulated_msg + chunk
-                            reasoning = (
-                                chunk.additional_kwargs.get("reasoning_content")
-                                if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs
-                                else None
-                            )
-                            stream_filter.process_chunk(str(chunk.content or ""), reasoning_content=reasoning)
-                        stream_filter.flush()
-                        ai_msg = accumulated_msg or AIMessage(content="")
-                    else:
-                        ai_msg = invoker.invoke(current_messages)
-                except Exception as exc:
-                    if on_token is not None or on_thought is not None:
-                        # Fallback to invoke if mock or model does not implement stream
-                        try:
-                            ai_msg = invoker.invoke(current_messages)
-                            stream_filter.process_chunk(str(ai_msg.content or ""))
-                            stream_filter.flush()
-                        except Exception as inner_exc:
-                            logger.error("LLM invocation error: %s", inner_exc)
-                            turn_error = str(inner_exc)
-                            break
-                    else:
-                        logger.error("LLM invocation error: %s", exc)
-                        turn_error = str(exc)
-                        break
-
-                current_messages.append(ai_msg)
-
-                # Accumulate token metrics
-                if hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
-                    total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
-                    total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
-                if hasattr(ai_msg, "response_metadata") and ai_msg.response_metadata:
-                    model_meta = ai_msg.response_metadata.get("model_name")
-                    if model_meta:
-                        used_model_name = str(model_meta)
-
-                # Extract cleaned content and thoughts
-                clean_text = stream_filter.get_clean_content()
-                thought_text = stream_filter.get_thought()
-                if not clean_text and ai_msg.content:
-                    raw_str = str(ai_msg.content)
-                    if "<think>" in raw_str and "</think>" in raw_str:
-                        thought_part, _, after = raw_str.partition("</think>")
-                        _, _, th_content = thought_part.partition("<think>")
-                        thought_text = th_content.strip()
-                        clean_text = after.strip()
-                    else:
-                        clean_text = raw_str.strip()
-
-                if thought_text:
-                    final_thought = (f"{final_thought}\n{thought_text}").strip() if final_thought else thought_text
-
-                tool_calls = getattr(ai_msg, "tool_calls", None)
-
-                # If no tools requested or synthesis yielded text, we have our final content
-                if not tool_calls:
-                    if clean_text:
-                        final_content = clean_text
-                    elif ai_msg.content:
-                        final_content = str(ai_msg.content)
-                    break
-                elif needs_synthesis and (clean_text or ai_msg.content):
-                    final_content = clean_text or str(ai_msg.content)
-                    break
-
-                # Execute all requested tool calls
-                for tool_call in tool_calls:
-                    tool_name = tool_call.get("name", "")
-                    tool_args = tool_call.get("args", {})
-                    tool_id = tool_call.get("id", f"call_{iteration}")
-
-                    if on_tool_start:
-                        on_tool_start(tool_name, tool_args)
-
-                    t0 = time.perf_counter()
-                    tool = self.tool_map.get(tool_name)
-                    status = "success"
-
-                    if tool is None:
-                        tool_output = f"Error: Tool '{tool_name}' is not recognized."
-                        status = "error"
-                    else:
-                        try:
-                            tool_output = tool.invoke(tool_args)
-                            if isinstance(tool_output, str) and '"status": "no_results"' in tool_output:
-                                status = "no_results"
-                            elif isinstance(tool_output, str) and '"status": "not_found"' in tool_output:
-                                status = "not_found"
-                        except Exception as exc:
-                            logger.exception("Error executing tool %s with args %s", tool_name, tool_args)
-                            tool_output = f"Tool execution error: {exc}"
-                            status = "error"
-
-                    tool_duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-
-                    if on_tool_end:
-                        on_tool_end(tool_name, status, tool_duration_ms)
-
-                    executed_tool_calls.append({
-                        "name": tool_name,
-                        "args": tool_args,
-                        "id": tool_id,
-                        "duration_ms": tool_duration_ms,
-                        "status": status,
-                    })
-
-                    tool_msg = ToolMessage(
-                        content=str(tool_output),
-                        tool_call_id=tool_id,
-                    )
-                    current_messages.append(tool_msg)
-
-                # If max iterations reached, invoke model once more for final synthesis
-                if iteration >= self.max_tool_iterations:
-                    try:
-                        synth_msg = self.model.invoke(current_messages)
-                        current_messages.append(synth_msg)
-                        final_content = str(synth_msg.content or "")
-                    except Exception as exc:
-                        logger.error("Synthesis invocation error: %s", exc)
-                    break
-
-            # Fallback if final_content is still empty
-            if not final_content:
-                for msg in reversed(current_messages):
-                    if isinstance(msg, AIMessage) and msg.content:
-                        final_content = str(msg.content)
-                        break
-
-            if not final_content:
-                if turn_error:
-                    final_content = f"An error occurred while processing your request: {turn_error}"
+                    on_status("Synthesizing answer from retrieved startup data...")
                 else:
-                    final_content = "I could not retrieve a response for your query. Please try rephrasing."
+                    on_status("Analyzing query & evaluating required startup tools...")
 
-            # Check for clarification
-            is_clarification = self.is_clarification_response(
-                final_content, tool_calls_count=len(executed_tool_calls)
-            )
-            if is_clarification:
-                session.clarification_count += 1
+            stream_filter = ThoughtStreamFilter(on_token=on_token, on_thought=on_thought)
 
-            turn_span.set_outputs({
-                "bot_response": final_content,
-                "thought": final_thought or None,
-                "is_clarification": is_clarification,
-                "tool_calls_count": len(executed_tool_calls),
-            })
+            try:
+                if (on_token is not None or on_thought is not None) and hasattr(invoker, "stream"):
+                    # Real-time token streaming with live thought extraction
+                    accumulated_msg: Optional[AIMessageChunk] = None
+                    try:
+                        stream_iter = (
+                            invoker.stream(current_messages, config=invoke_config)
+                            if invoke_config
+                            else invoker.stream(current_messages)
+                        )
+                    except TypeError:
+                        stream_iter = invoker.stream(current_messages)
+
+                    for chunk in stream_iter:
+                        accumulated_msg = chunk if accumulated_msg is None else accumulated_msg + chunk
+                        reasoning = (
+                            chunk.additional_kwargs.get("reasoning_content")
+                            if hasattr(chunk, "additional_kwargs") and chunk.additional_kwargs
+                            else None
+                        )
+                        stream_filter.process_chunk(str(chunk.content or ""), reasoning_content=reasoning)
+                    stream_filter.flush()
+                    ai_msg = accumulated_msg or AIMessage(content="")
+                else:
+                    try:
+                        ai_msg = (
+                            invoker.invoke(current_messages, config=invoke_config)
+                            if invoke_config
+                            else invoker.invoke(current_messages)
+                        )
+                    except TypeError:
+                        ai_msg = invoker.invoke(current_messages)
+            except Exception as exc:
+                if on_token is not None or on_thought is not None:
+                    # Fallback to invoke if mock or model does not implement stream
+                    try:
+                        try:
+                            ai_msg = (
+                                invoker.invoke(current_messages, config=invoke_config)
+                                if invoke_config
+                                else invoker.invoke(current_messages)
+                            )
+                        except TypeError:
+                            ai_msg = invoker.invoke(current_messages)
+                        stream_filter.process_chunk(str(ai_msg.content or ""))
+                        stream_filter.flush()
+                    except Exception as inner_exc:
+                        logger.error("LLM invocation error: %s", inner_exc)
+                        turn_error = str(inner_exc)
+                        break
+                else:
+                    logger.error("LLM invocation error: %s", exc)
+                    turn_error = str(exc)
+                    break
+
+            current_messages.append(ai_msg)
+
+            # Accumulate token metrics
+            if hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
+                total_input_tokens += ai_msg.usage_metadata.get("input_tokens", 0)
+                total_output_tokens += ai_msg.usage_metadata.get("output_tokens", 0)
+            if hasattr(ai_msg, "response_metadata") and ai_msg.response_metadata:
+                model_meta = ai_msg.response_metadata.get("model_name")
+                if model_meta:
+                    used_model_name = str(model_meta)
+
+            # Extract cleaned content and thoughts
+            clean_text = stream_filter.get_clean_content()
+            thought_text = stream_filter.get_thought()
+            if not clean_text and ai_msg.content:
+                raw_str = str(ai_msg.content)
+                if "<think>" in raw_str and "</think>" in raw_str:
+                    thought_part, _, after = raw_str.partition("</think>")
+                    _, _, th_content = thought_part.partition("<think>")
+                    thought_text = th_content.strip()
+                    clean_text = after.strip()
+                else:
+                    clean_text = raw_str.strip()
+
+            if thought_text:
+                final_thought = (f"{final_thought}\n{thought_text}").strip() if final_thought else thought_text
+
+            tool_calls = getattr(ai_msg, "tool_calls", None)
+
+            # If no tools requested or synthesis yielded text, we have our final content
+            if not tool_calls:
+                if clean_text:
+                    final_content = clean_text
+                elif ai_msg.content:
+                    final_content = str(ai_msg.content)
+                break
+            elif needs_synthesis and (clean_text or ai_msg.content):
+                final_content = clean_text or str(ai_msg.content)
+                break
+
+            # Execute all requested tool calls
+            for tool_call in tool_calls:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("args", {})
+                tool_id = tool_call.get("id", f"call_{iteration}")
+
+                if on_tool_start:
+                    on_tool_start(tool_name, tool_args)
+
+                t0 = time.perf_counter()
+                tool = self.tool_map.get(tool_name)
+                status = "success"
+
+                if tool is None:
+                    tool_output = f"Error: Tool '{tool_name}' is not recognized."
+                    status = "error"
+                else:
+                    try:
+                        tool_output = tool.invoke(tool_args)
+                        if isinstance(tool_output, str) and '"status": "no_results"' in tool_output:
+                            status = "no_results"
+                        elif isinstance(tool_output, str) and '"status": "not_found"' in tool_output:
+                            status = "not_found"
+                    except Exception as exc:
+                        logger.exception("Error executing tool %s with args %s", tool_name, tool_args)
+                        tool_output = f"Tool execution error: {exc}"
+                        status = "error"
+
+                tool_duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+
+                if on_tool_end:
+                    on_tool_end(tool_name, status, tool_duration_ms)
+
+                executed_tool_calls.append({
+                    "name": tool_name,
+                    "args": tool_args,
+                    "id": tool_id,
+                    "duration_ms": tool_duration_ms,
+                    "status": status,
+                })
+
+                tool_msg = ToolMessage(
+                    content=str(tool_output),
+                    tool_call_id=tool_id,
+                )
+                current_messages.append(tool_msg)
+
+            # If max iterations reached, invoke model once more for final synthesis
+            if iteration >= self.max_tool_iterations:
+                try:
+                    try:
+                        synth_msg = (
+                            self.model.invoke(current_messages, config=invoke_config)
+                            if invoke_config
+                            else self.model.invoke(current_messages)
+                        )
+                    except TypeError:
+                        synth_msg = self.model.invoke(current_messages)
+                    current_messages.append(synth_msg)
+                    final_content = str(synth_msg.content or "")
+                except Exception as exc:
+                    logger.error("Synthesis invocation error: %s", exc)
+                break
+
+        # Fallback if final_content is still empty
+        if not final_content:
+            for msg in reversed(current_messages):
+                if isinstance(msg, AIMessage) and msg.content:
+                    final_content = str(msg.content)
+                    break
+
+        if not final_content:
+            if turn_error:
+                final_content = f"An error occurred while processing your request: {turn_error}"
+            else:
+                final_content = "I could not retrieve a response for your query. Please try rephrasing."
+
+        # Check for clarification
+        is_clarification = self.is_clarification_response(
+            final_content, tool_calls_count=len(executed_tool_calls)
+        )
+        if is_clarification:
+            session.clarification_count += 1
 
         # 5. Record full turn trajectory (tool calls & responses) and final AI response in session
         new_turn_messages = current_messages[1 + session_len_at_start:]
@@ -483,7 +509,11 @@ class UnicornAgent:
         session.update_trace_outputs()
 
         latency_ms = (time.perf_counter() - start_time) * 1000.0
-        trace_id = session.trace_id or get_last_trace_id()
+        trace_id = (
+            getattr(langfuse_handler, "last_trace_id", None)
+            if langfuse_handler
+            else None
+        ) or session.trace_id or get_last_trace_id()
 
         total_tokens = total_input_tokens + total_output_tokens
         token_usage = {

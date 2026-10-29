@@ -153,18 +153,41 @@ def test_metrics_export_json():
 
 
 # ============================================================================
-# 3. Tracer Tests
+# 3. Tracer Tests (Langfuse)
 # ============================================================================
 
 
 def test_tracer_initialization():
-    """Verify MLflow tracer initialization without exceptions."""
+    """Verify Langfuse tracer initialization without exceptions."""
     init_tracer()
     # Flushes without errors
     flush_traces()
     # Trace ID should be a string or None if no trace ran in this test process yet
     trace_id = get_last_trace_id()
     assert trace_id is None or isinstance(trace_id, str)
+
+
+def test_langfuse_callback_handling():
+    """Verify Langfuse callback handler creation in offline and configured modes."""
+    from config.settings import Settings
+    from observability.tracer import get_langfuse_handler, get_trace_url
+
+    # Offline mode (when keys are empty)
+    cfg = Settings(langfuse_public_key="", langfuse_secret_key="")
+    assert cfg.is_langfuse_configured is False
+    assert get_trace_url(settings=cfg) is None
+
+    # Handler should return None in offline mode
+    handler = get_langfuse_handler(session_id="offline_sess", settings=cfg)
+    assert handler is None
+
+    # Configured settings
+    configured = Settings(
+        langfuse_public_key="pk-lf-test-123",
+        langfuse_secret_key="sk-lf-test-123",
+        langfuse_host="http://localhost:3000",
+    )
+    assert configured.is_langfuse_configured is True
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ Features:
 - Normalizes unicode whitespace and removes non-printable/control characters.
 - Caps maximum input query length to mitigate token flooding attacks.
 - Detects common prompt injection heuristics (e.g. system prompt overrides, role spoofing).
-- Decorated with MLflow GUARDRAIL span for full traceability.
 """
 
 from __future__ import annotations
@@ -14,9 +13,6 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from typing import List, Optional
-
-import mlflow
-from mlflow.entities import SpanType
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +42,6 @@ class SanitizationResult:
     was_truncated: bool = False
 
 
-@mlflow.trace(name="query_sanitizer", span_type=SpanType.GUARDRAIL)
 def sanitize_query(raw_query: str) -> SanitizationResult:
     """Sanitize, normalize, and guardrail check an incoming user query.
 
@@ -81,18 +76,6 @@ def sanitize_query(raw_query: str) -> SanitizationResult:
             flagged_reasons.append(f"Prompt injection pattern detected: '{pattern.pattern}'")
 
     is_safe = len(flagged_reasons) == 0
-
-    span = mlflow.get_current_active_span()
-    if span:
-        span.set_inputs({"raw_query": raw_query})
-        span.set_outputs({
-            "sanitized_query": cleaned,
-            "is_safe": is_safe,
-            "was_truncated": was_truncated,
-            "flagged_count": len(flagged_reasons),
-        })
-        if flagged_reasons:
-            span.set_attribute("security.flagged_reasons", flagged_reasons)
 
     return SanitizationResult(
         original_query=raw_query,

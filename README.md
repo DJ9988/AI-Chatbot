@@ -34,7 +34,7 @@ flowchart TD
     
     Agent --> AuditLog["Audit Logger (logs/chat_audit.jsonl)"]
     Agent --> Metrics["Metrics Collector (logs/metrics_summary.json)"]
-    Agent --> MLflowStore["MLflow DB (sqlite:///data/mlflow.db)"]
+    Agent --> LangfuseStore["Langfuse Tracing (Self-Hosted Docker / Langfuse Cloud)"]
 ```
 
 ---
@@ -79,9 +79,10 @@ LLM_TEMPERATURE=0.2
 LLM_TIMEOUT=45.0
 LLM_MAX_RETRIES=1
 
-# Observability (MLflow SQLite backend stored in data/)
-MLFLOW_TRACKING_URI="sqlite:///data/mlflow.db"
-MLFLOW_EXPERIMENT_NAME="indian_unicorns_chatbot"
+# Observability (Langfuse Tracing - Self-Hosted Docker or Langfuse Cloud)
+LANGFUSE_PUBLIC_KEY="pk-lf-..."
+LANGFUSE_SECRET_KEY="sk-lf-..."
+LANGFUSE_HOST="http://localhost:3000"
 ```
 
 ### 4. Build Dataset & SQLite Database
@@ -106,7 +107,7 @@ python cli.py
 Inside the CLI, you can chat naturally or use the built-in commands:
 - `stats`   : View real-time aggregated metrics (queries, clarifications, errors, tokens, latencies).
 - `log`     : Inspect the full structured JSON audit record of the last interaction.
-- `trace`   : View MLflow trace spans and command instructions.
+- `trace`   : View Langfuse trace information and dashboard setup guidance.
 - `history` : View multi-turn conversation messages.
 - `reset`   : Clear session context and start fresh.
 - `exit`    : Quit the CLI.
@@ -119,23 +120,54 @@ python cli.py --query "What does Razorpay do?"
 
 ---
 
-## 📊 Viewing Observability & Traces in MLflow UI
+## 📊 Observability & Traces with Langfuse
 
-To inspect interactive trace trees, span durations, token consumption, and input/output payloads:
+The chatbot natively integrates with **Langfuse** for production GenAI tracing, multi-turn thread observability, and LLM call analytics.
+
+### Option A: Local Self-Hosted Langfuse via Docker (Recommended for Local Dev)
+
+A complete, automated `docker-compose.yml` with OTLP trace ingestion is included:
 
 ```bash
-mlflow ui --backend-store-uri sqlite:///data/mlflow.db
+# 1. Start the local Langfuse stack (ClickHouse, Postgres, Redis, MinIO, Worker, Web)
+sudo docker compose up -d
+
+# 2. Access the dashboard:
+# URL: http://localhost:3000
+# Email: admin@local.host
+# Password: adminpassword123
+
+# 3. Configure your .env:
+LANGFUSE_PUBLIC_KEY="pk-lf-local-unicorns"
+LANGFUSE_SECRET_KEY="sk-lf-local-unicorns"
+LANGFUSE_HOST="http://localhost:3000"
 ```
 
-Open your browser at **http://localhost:5000** and select the `indian_unicorns_chatbot` experiment.
+To stop the containers:
+```bash
+sudo docker compose down
+```
 
-### What is captured in each MLflow Trace:
-- **`Session: <session_id>` (AGENT root span)**: Holds the entire multi-turn conversation session in a single unified trace tree, capturing the complete message history across turns (`user` and `assistant` messages).
-- **`Turn <N>: <query>` (CHAIN span)**: Each conversation turn within the session, capturing the user query, turn index, latency, and response.
-- **`query_sanitizer` (GUARDRAIL span)**: Unicode normalization, control character removal, length cap, prompt injection heuristics.
-- **`RunnableWithFallbacks` (CHAIN span)**: LangChain invocation with automated provider fallback routing.
-- **`ChatOpenAI` (CHAT_MODEL span)**: Full prompt messages, completion text, latency, token usage (`input_tokens`, `output_tokens`, `total_tokens`).
-- **`lookup_company` / `filter_companies_tool` / `search_companies_tool` (TOOL span)**: Exact arguments, execution duration, and returned data.
+### Option B: Langfuse Cloud
+
+If you prefer managed cloud tracing:
+1. Sign up at [cloud.langfuse.com](https://cloud.langfuse.com) (or EU cloud: [cloud.langfuse.com](https://cloud.langfuse.com)).
+2. Generate API keys from project settings.
+3. Add keys to `.env`:
+   ```ini
+   LANGFUSE_PUBLIC_KEY="pk-lf-..."
+   LANGFUSE_SECRET_KEY="sk-lf-..."
+   LANGFUSE_HOST="https://cloud.langfuse.com"
+   ```
+
+*(Note: If Langfuse keys are omitted, the chatbot operates gracefully in offline no-op mode with local structured JSON audit logging).*
+
+### What is captured in each Langfuse Trace:
+- **`Session / Thread ID` (`session_id`)**: Groups all turns of a conversation under a single session view.
+- **`Turn <N>: <query>`**: Individual trace per turn tracking latency, user query, and final answer.
+- **`ChatOpenAI`**: Model parameters, token usage counts (`input_tokens`, `output_tokens`, `total_tokens`), raw prompt, and raw model output.
+- **`Dynamic Tools` (`lookup_company`, `filter_companies_tool`, `search_companies_tool`)**: Tool inputs, return payloads, and execution latency.
+- **`ThoughtStreamFilter` / Reasoning**: Extracted thinking content and reasoning tags.
 
 ### Structured Audit Logging (`logs/chat_audit.jsonl`)
 Every turn writes an audit entry formatted as:
@@ -255,8 +287,8 @@ ai_chatbot/
 ├── data/
 │   ├── create_dataset.py     # Download, normalize, and build SQLite + FTS5 database
 │   ├── raw/                  # Downloaded raw CSV (created by create_dataset.py)
-│   ├── processed/            # companies.db and normalized tracxn.csv
-│   └── mlflow.db             # SQLite backend store for MLflow traces
+│   └── processed/            # companies.db and normalized tracxn.csv
+├── docker-compose.yml        # Self-hosted Langfuse server & PostgreSQL setup
 ├── tools/
 │   ├── __init__.py
 │   └── db_tools.py           # Dynamic SQLite retrieval tools (zero hardcoded dictionaries)
@@ -268,7 +300,7 @@ ai_chatbot/
 │   ├── __init__.py
 │   └── sanitizer.py          # Input normalization, length capping, prompt injection checks
 ├── observability/
-│   ├── tracer.py             # MLflow tracing initialization and span inspection
+│   ├── tracer.py             # Langfuse tracing client & LangChain CallbackHandler
 │   ├── logger.py             # Structured JSON Lines audit logger (logs/chat_audit.jsonl)
 │   └── metrics.py            # MetricsCollector tracking queries, clarifications, latency, tokens
 ├── logs/

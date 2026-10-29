@@ -23,62 +23,24 @@ class SessionState:
         self.updated_at: float = time.time()
         self.query_count: int = 0
         self.clarification_count: int = 0
-        self._cm: Optional[Any] = None
-        self._span: Optional[Any] = None
         self.trace_id: Optional[str] = None
 
     def ensure_trace(self) -> None:
-        """Start a persistent root span for this session if one is not already active."""
-        if self._span is None:
-            try:
-                import mlflow
-                from mlflow.entities import SpanType
-
-                cm = mlflow.start_span(name=f"Session: {self.session_id}", span_type=SpanType.AGENT)
-                self._span = cm.__enter__()
-                self._cm = cm
-                self._span.set_inputs({"session_id": self.session_id})
-                self._span.set_attribute("mlflow.trace.session", self.session_id)
-                self.trace_id = getattr(self._span, "trace_id", None)
-            except Exception as exc:
-                logger.debug("Could not start session trace for %s: %s", self.session_id, exc)
+        """Initialize session tracking if needed."""
+        pass
 
     def update_trace_outputs(self) -> None:
-        """Update session root span outputs with all messages across turns."""
-        if self._span:
-            try:
-                msg_chain = [
-                    {
-                        "role": ("user" if m.type == "human" else "assistant"),
-                        "content": str(m.content),
-                    }
-                    for m in self.messages
-                    if getattr(m, "content", None)
-                ]
-                self._span.set_outputs({
-                    "total_turns": self.query_count,
-                    "clarification_count": self.clarification_count,
-                    "messages": msg_chain,
-                })
-            except Exception as exc:
-                logger.debug("Failed updating trace outputs for %s: %s", self.session_id, exc)
+        """Update session tracking outputs."""
+        pass
 
     def close_trace(self) -> Optional[str]:
-        """Close and export the multi-turn session trace to MLflow storage."""
-        self.update_trace_outputs()
-        exported_id = self.trace_id
-        if self._cm:
-            try:
-                import mlflow
-
-                self._cm.__exit__(None, None, None)
-                mlflow.flush_trace_async_logging()
-            except Exception as exc:
-                logger.debug("Error exiting session trace for %s: %s", self.session_id, exc)
-            finally:
-                self._cm = None
-                self._span = None
-        return exported_id
+        """Flush traces and return the active trace ID."""
+        try:
+            from observability.tracer import flush_traces
+            flush_traces()
+        except Exception:
+            pass
+        return self.trace_id
 
     def add_user_message(self, content: str) -> HumanMessage:
         """Append a user message to the session history."""
