@@ -116,10 +116,11 @@ LANGFUSE_HOST="http://localhost:3000"
 
 ### 3. Build Database
 
+Requires `KAGGLE_API_KEY` set in `.env` to download the raw data:
 ```bash
 python data/create_dataset.py
 ```
-This cleans the dataset, normalizes schema inconsistencies, and creates `data/processed/companies.db` with indexed attributes and an FTS5 full-text search table.
+This downloads, cleans, and builds the SQLite database (`data/processed/companies.db`).
 
 ---
 
