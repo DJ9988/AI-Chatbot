@@ -43,6 +43,35 @@ flowchart TD
 
 ---
 
+## 📌 Assumptions & Limitations
+
+1. **Static Dataset Snapshot**:
+   - The knowledge base is strictly limited to the static 118 unicorn startups in the provided Kaggle dataset. Facts reflect only what is recorded in the dataset.
+2. **Missing Field Transparency**:
+   - Total funding till date and certain valuations are unrecorded/null for several companies in the source dataset. The bot explicitly informs the user that these metrics are missing while reporting all available alternatives (annual revenue, latest round, stage).
+3. **Provider-Agnostic LLM Interface**:
+   - The application conforms to standard OpenAI-compatible HTTP specs. It can target any provider (`LLM_BASE_URL`) such as Mistral, OpenAI, NVIDIA NIM, vLLM, or Ollama locally without code changes.
+4. **Observability Routing**:
+   - The chatbot currently routes traces to a local Langfuse stack (which can be started via `deploy/docker-compose.langfuse.yml`). To deploy remotely, simply update `LANGFUSE_HOST` in `.env` to point to [Langfuse Cloud](https://cloud.langfuse.com) or your hosted instance. If omitted, the chatbot operates gracefully in offline mode.
+
+---
+
+## 📋 Live Model Capabilities Showcase ([TEST_QUERIES.md](TEST_QUERIES.md))
+
+For an end-to-end evaluation log of the chatbot's live behavior, refer to [**TEST_QUERIES.md**](TEST_QUERIES.md). 
+
+It documents verified model responses, dynamic tool invocations, and execution telemetry across 8 core evaluation categories:
+- **Factual Company Lookups**: Single-entity retrieval for domestic and overseas-relocated unicorns (Razorpay, Zepto, Zerodha, Postman) with zero hallucinations.
+- **Exploratory & Parametric Filtering**: Structured queries across sectors, cities, and founded years with autonomous schema discovery and fallback.
+- **Free-Text Semantic Search (FTS)**: SQLite FTS5 BM25 search across unstructured company offerings (EVs, logistics, gaming).
+- **Conversational Memory & Context Re-use**: Multi-turn dialogue, pronoun resolution, and sub-second follow-up answers without redundant database calls.
+- **Ambiguity & Cross-Questioning**: Proactive clarification triggers for broad or subjective user inquiries before searching.
+- **Typo Tolerance & Fuzzy Matching**: Automatic correction of company names, punctuation normalization, and substring matching.
+- **Grounding & Missing Fields**: Transparent reporting of unrecorded metrics (bootstrapped status, null valuations) and graceful out-of-dataset entity handling.
+- **Security & Guardrails**: Sub-50ms prompt injection interception, SQL injection neutralization, and control character sanitization.
+
+---
+
 ## 🚀 Quickstart
 
 ### 1. Installation
@@ -148,25 +177,6 @@ Run the self-hosted Langfuse stack (ClickHouse, Postgres, Redis, MinIO, Web UI):
 docker compose -f deploy/docker-compose.langfuse.yml up -d
 ```
 - Web UI: [http://localhost:3000](http://localhost:3000) (Default login: `admin@local.host` / `adminpassword123`)
-
----
-
-## 📋 Live Model Capabilities Showcase ([TEST_QUERIES.md](TEST_QUERIES.md))
-
-For complete evaluation logs and live agent outputs across all test queries, see [**TEST_QUERIES.md**](TEST_QUERIES.md):
-
-| Category | Capability | Demonstrated Behavior |
-|---|---|---|
-| **1. Factual Company Lookups** | Single-entity retrieval & metric extraction | Grounded lookups for Razorpay, Zepto, Zerodha, and overseas-relocated Postman. |
-| **2. Exploratory & Filtering Queries** | Multi-condition filtering & schema inspection | Autonomous schema fallback (`fintech` → payments, lending, banking tech) and 56 distinct sector listings. |
-| **3. Free-Text Semantic Search (FTS)** | Unstructured company background search | FTS5 BM25 search across EV mobility (Ather, Ola Electric), logistics (Delhivery, XpressBees), and gaming (Hike, MPL, Dream11). |
-| **4. Conversational Memory & Context Re-use** | Multi-turn state & anaphora resolution | Zero-tool follow-ups ("Which of these are in Bangalore?"), sub-second memory answers, Zerodha vs Groww comparison. |
-| **5. Ambiguity & Cross-Questioning** | Subjective query handling | Proactive cross-questioning on broad advice ("Which company is best to collaborate with?"), disambiguating "most successful". |
-| **6. Typo Tolerance & Fuzzy Matching** | Phonetic & string distance matching | Auto-corrects `Razorypay` → Razorpay, normalizes `Byjus` → BYJU'S, resolves substring `1mg` → Tata 1mg. |
-| **7. Out-of-Dataset & Missing Fields** | Grounding & hallucination prevention | Refuses to hallucinate external companies (Stripe, OpenAI); transparently reports bootstrapped status for Zerodha. |
-| **8. Security & Input Sanitization** | Prompt injection & SQL injection defense | Blocks jailbreaks in **33.8ms**, neutralizes SQL injection (`DROP TABLE`), and strips control characters safely. |
-
-👉 **Read the full showcase with exact prompts, tool payloads, and outputs in [TEST_QUERIES.md](TEST_QUERIES.md).**
 
 ---
 
