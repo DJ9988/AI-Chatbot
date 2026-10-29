@@ -15,6 +15,17 @@ _LAST_HANDLER: Optional[Any] = None
 _IS_INITIALIZED = False
 
 
+def _resolve_langfuse_host(host: str) -> str:
+    """If host.docker.internal is configured but unresolvable (e.g. running on host Linux), fallback to localhost."""
+    if "host.docker.internal" in host:
+        try:
+            import socket
+            socket.gethostbyname("host.docker.internal")
+        except Exception:
+            return host.replace("host.docker.internal", "localhost")
+    return host
+
+
 def init_tracer(settings: Optional[Settings] = None) -> Optional[Any]:
     """Initialize Langfuse client if API keys are configured."""
     global _LANGFUSE_CLIENT, _IS_INITIALIZED
@@ -33,19 +44,21 @@ def init_tracer(settings: Optional[Settings] = None) -> Optional[Any]:
     try:
         from langfuse import Langfuse
 
+        effective_host = _resolve_langfuse_host(cfg.langfuse_host)
+
         os.environ["LANGFUSE_PUBLIC_KEY"] = cfg.langfuse_public_key
         os.environ["LANGFUSE_SECRET_KEY"] = cfg.langfuse_secret_key
-        os.environ["LANGFUSE_HOST"] = cfg.langfuse_host
+        os.environ["LANGFUSE_HOST"] = effective_host
 
         _LANGFUSE_CLIENT = Langfuse(
             public_key=cfg.langfuse_public_key,
             secret_key=cfg.langfuse_secret_key,
-            host=cfg.langfuse_host,
+            host=effective_host,
         )
         _IS_INITIALIZED = True
         logger.info(
             "Langfuse tracing initialized: Host=%s",
-            cfg.langfuse_host,
+            effective_host,
         )
         return _LANGFUSE_CLIENT
     except Exception as exc:
@@ -68,6 +81,9 @@ def get_langfuse_handler(
 
     try:
         from langfuse.langchain import CallbackHandler
+
+        effective_host = _resolve_langfuse_host(cfg.langfuse_host)
+        os.environ["LANGFUSE_HOST"] = effective_host
 
         trace_context: Dict[str, Any] = {}
         if session_id:
@@ -106,7 +122,8 @@ def get_trace_url(
     cfg = settings or get_settings()
     if not cfg.is_langfuse_configured:
         return None
-    base = cfg.langfuse_host.rstrip("/")
+    effective_host = _resolve_langfuse_host(cfg.langfuse_host)
+    base = effective_host.rstrip("/")
     if trace_id:
         return f"{base}/project/unicorn-project/traces/{trace_id}"
     return f"{base}/project/unicorn-project/traces"

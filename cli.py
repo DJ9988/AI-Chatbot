@@ -24,10 +24,6 @@ def print_banner(model_name: str) -> None:
     print("=" * 65)
     print("Commands:")
     print(" - 'reset'   : Clear conversation history and start fresh")
-    print(" - 'history' : View current conversation turns")
-    print(" - 'stats'   : Display real-time aggregated metrics summary")
-    print(" - 'log'     : View the last structured JSON audit log entry with full details")
-    print(" - 'trace'   : View Langfuse tracing status and dashboard link")
     print(" - 'exit'    : Quit the chatbot")
     print("-" * 65)
     print("Sample queries to try:")
@@ -72,51 +68,6 @@ def run_interactive_cli() -> None:
         if cmd == "reset":
             agent.conversation_manager.reset_session(session_id)
             print("[✓] Conversation context cleared and session trace exported.\n")
-            continue
-
-        if cmd == "history":
-            session = agent.conversation_manager.get_session(session_id)
-            msgs = session.get_messages()
-            print(f"\n--- History ({len(msgs)} messages) ---")
-            for m in msgs:
-                role = "User" if m.type == "human" else "Bot"
-                print(f"[{role}]: {m.content[:100]}...")
-            print("----------------------------\n")
-            continue
-
-        if cmd in ("stats", "metrics"):
-            summary = agent.metrics_collector.get_summary()
-            print("\n📊 Aggregated Observability Metrics:")
-            print(json.dumps(summary, indent=2))
-            print()
-            continue
-
-        if cmd in ("log", "logs"):
-            recent = agent.audit_logger.get_recent_logs(limit=1)
-            print("\n📝 Latest Structured JSON Audit Log:")
-            if not recent:
-                print("   (No logs recorded yet)")
-            for entry in recent:
-                print(json.dumps(entry, indent=2))
-            print()
-            continue
-
-        if cmd in ("trace", "traces"):
-            from observability.tracer import flush_traces, get_trace_url
-            flush_traces()
-            print("\n🔍 Langfuse Tracing Information:")
-            if settings.is_langfuse_configured:
-                print(f"   Status: Active (connected to {settings.langfuse_host})")
-                print(f"   Session ID: {session_id}")
-                url = get_trace_url()
-                print(f"   Dashboard: {url}")
-            else:
-                print("   Status: Offline Mode (LANGFUSE_PUBLIC_KEY not set in .env)")
-                print("   Local audit logs are saved in logs/chat_audit.jsonl")
-                print("   To view traces in Langfuse UI:")
-                print("   1. Start local Langfuse Docker: docker compose up -d")
-                print("   2. Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY in .env")
-                print("   3. Or set Langfuse Cloud keys from https://cloud.langfuse.com\n")
             continue
 
         thought_header_printed = False

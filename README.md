@@ -105,11 +105,7 @@ python cli.py
 ```
 
 Inside the CLI, you can chat naturally or use the built-in commands:
-- `stats`   : View real-time aggregated metrics (queries, clarifications, errors, tokens, latencies).
-- `log`     : Inspect the full structured JSON audit record of the last interaction.
-- `trace`   : View Langfuse trace information and dashboard setup guidance.
-- `history` : View multi-turn conversation messages.
-- `reset`   : Clear session context and start fresh.
+- `reset`   : Clear session context and start fresh with a clean conversation turn.
 - `exit`    : Quit the CLI.
 
 ### Non-Interactive Single Query
@@ -274,7 +270,7 @@ Every turn writes an audit entry formatted as:
 
 ## 🧪 Running Tests
 
-The test suite contains **87 comprehensive unit tests** covering data normalization, tools, agent lifecycle, real-time streaming, thought routing, observability, and sanitization:
+The test suite contains **95 comprehensive unit tests** covering data normalization, tools, agent lifecycle, real-time streaming, thought routing, FastAPI endpoints, observability, and sanitization:
 
 ```bash
 pytest -v
@@ -283,11 +279,30 @@ pytest -v
 Test breakdown:
 - `tests/test_create_dataset.py`: 35 tests for pipeline, schemas, text normalization, SQLite table creation, and missing value handling.
 - `tests/test_tools.py`: 28 tests for company lookups (exact, case-insensitive, fuzzy, punctuation-insensitive), parameterized filtering, FTS5 escaping, and SQL injection safety.
-- `tests/test_agent.py`: 9 tests for ReAct tool loop, multi-turn history trimming, clarification detection, real-time token/tool streaming, and live thought stream routing.
-- `tests/test_config.py`: 5 tests for provider-agnostic `.env` settings and LangChain `.with_fallbacks()`.
-- `tests/test_agent.py`: 7 tests for multi-turn history trimming, clarification detection, tool calling, and session isolation.
+- `tests/test_agent.py`: 10 tests for ReAct tool loop, multi-turn history trimming, clarification detection, real-time token/tool streaming, and live thought stream routing.
+- `tests/test_api.py`: 7 tests verifying FastAPI endpoints (`/health`, `/chat`, `/chat/stream`, `/sessions`, `/metrics`, `/logs/latest`).
+- `tests/test_config.py`: 6 tests for provider-agnostic `.env` settings, alias properties, and LangChain `.with_fallbacks()`.
 - `tests/test_observability.py`: 4 tests for JSONL audit writing/reading, metrics computation (percentiles, rates, tokens), and trace initialization.
 - `tests/test_sanitizer.py`: 5 tests for unicode normalization, length capping, and prompt injection detection.
+
+---
+
+## 📋 Live Model Capabilities Showcase ([TEST_QUERIES.md](TEST_QUERIES.md))
+
+For an extensive live demonstration of the chatbot's real-world capabilities, refer to [**TEST_QUERIES.md**](TEST_QUERIES.md). It documents exact model responses, tool executions, and latency metrics across all 8 functional evaluation categories:
+
+| Category | Capability Evaluated | Highlights & Demonstrated Live Behavior |
+|---|---|---|
+| **1. Factual Company Lookups** | Single-entity retrieval, metric extraction | Precise lookups for Razorpay, Zepto, Zerodha, and overseas-headquartered Postman with zero hallucinations. |
+| **2. Exploratory & Filtering Queries** | Parametric multi-condition filtering | Autonomous schema discovery (`fintech` → payments, lending, banking tech), year ranges, and complete 56 sector listings. |
+| **3. Free-Text Semantic Search (FTS)** | Unstructured company background search | FTS5 BM25 search across EV mobility (Ather, Ola Electric), logistics (Delhivery, XpressBees), and gaming (Hike, MPL, Dream11). |
+| **4. Conversational Memory & Context Re-use** | Multi-turn state, anaphora resolution | Zero-tool follow-ups ("Which of these are based in Bangalore?", "Where is it headquartered?"), sub-second memory retrieval, Zerodha vs Groww comparison. |
+| **5. Ambiguity & Cross-Questioning** | Subjective intent clarification | Proactive cross-questioning for broad advice ("Which company is best to collaborate with?"), disambiguating "most successful". |
+| **6. Typo Tolerance & Fuzzy Matching** | Levenshtein distance & phonetic matching | Auto-corrects `Razorypay` → Razorpay, normalizes `Byjus` → BYJU'S, resolves substring `1mg` → Tata 1mg. |
+| **7. Out-of-Dataset & Missing Fields** | Strict knowledge grounding | Refuses to hallucinate for non-dataset companies (Stripe, OpenAI); transparently reports bootstrapped status for Zerodha. |
+| **8. Security & Input Sanitization** | Prompt injection & SQL injection defense | Blocks jailbreak attempts in **33.8ms**, neutralizes SQL injection (`DROP TABLE`), and strips control characters safely. |
+
+👉 **Read the full showcase with exact prompts, tool payloads, and outputs in [TEST_QUERIES.md](TEST_QUERIES.md).**
 
 ---
 
